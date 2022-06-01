@@ -69,7 +69,7 @@ class MetacalDilatePSF(object):
         self._set_data()
         self._psf_cache = {}
 
-    def get_all(self, step=DEFAULT_STEP, types=None):
+    def get_all(self, step=DEFAULT_STEP, types=None, **kw):
         """
         Get metacal images in a dict for the requested image types
 
@@ -110,6 +110,7 @@ class MetacalDilatePSF(object):
         if 'noshear' in types and '1p' not in types:
             types.append('1p')
 
+        offset = kw.get('offset', None)  # Known offset of galaxy from center.
         shdict = {}
 
         # galshear keys
@@ -141,17 +142,18 @@ class MetacalDilatePSF(object):
                     # add in noshear from this one
                     obs, obs_noshear = self.get_obs_galshear(
                         sh,
-                        get_unsheared=True
+                        get_unsheared=True,
+                        offset=offset,
                     )
                     odict['noshear'] = obs_noshear
                 else:
-                    obs = self.get_obs_galshear(sh)
+                    obs = self.get_obs_galshear(sh, offset=offset)
 
             odict[type] = obs
 
         return odict
 
-    def get_obs_galshear(self, shear, get_unsheared=False):
+    def get_obs_galshear(self, shear, get_unsheared=False, offset=None):
         """
         This is the case where we shear the image, for calculating R
 
@@ -169,7 +171,7 @@ class MetacalDilatePSF(object):
 
         newpsf_image, newpsf_obj = self.get_target_psf(shear, type)
 
-        sheared_image = self.get_target_image(newpsf_obj, shear=shear)
+        sheared_image = self.get_target_image(newpsf_obj, shear=shear, offset=offset)
 
         newobs = self._make_obs(sheared_image, newpsf_image)
 
@@ -278,7 +280,7 @@ class MetacalDilatePSF(object):
         """
         return '%s-%s-%s' % (doshear, shear.g1, shear.g2)
 
-    def get_target_image(self, psf_obj, shear=None):
+    def get_target_image(self, psf_obj, shear=None, offset=None):
         """
         get the target image, convolved with the specified psf
         and possibly sheared
@@ -296,7 +298,7 @@ class MetacalDilatePSF(object):
         galsim image object
         """
 
-        imconv = self._get_target_gal_obj(psf_obj, shear=shear)
+        imconv = self._get_target_gal_obj(psf_obj, shear=shear, offset=offset)
 
         ny, nx = self.image.array.shape
 
@@ -314,11 +316,11 @@ class MetacalDilatePSF(object):
 
         return newim
 
-    def _get_target_gal_obj(self, psf_obj, shear=None):
+    def _get_target_gal_obj(self, psf_obj, shear=None, offset=None):
         import galsim
 
         if shear is not None:
-            shim_nopsf = self.get_sheared_image_nopsf(shear)
+            shim_nopsf = self.get_sheared_image_nopsf(shear, offset)
         else:
             shim_nopsf = self.image_int_nopsf
 
@@ -326,7 +328,7 @@ class MetacalDilatePSF(object):
 
         return imconv
 
-    def get_sheared_image_nopsf(self, shear):
+    def get_sheared_image_nopsf(self, shear, offset):
         """
         get the image sheared by the reqested amount, pre-psf and pre-pixel
 
@@ -341,16 +343,20 @@ class MetacalDilatePSF(object):
         """
         _check_shape(shear)
         # this is the interpolated, devonvolved image
-        sheared_image = self.image_int_nopsf.shear(g1=shear.g1, g2=shear.g2)
+        if offset is None:
+            sheared_image = self.image_int_nopsf.shear(g1=shear.g1, g2=shear.g2)
+        else:
+            sheared_image = self.image_int_nopsf.shear(g1=shear.g1, g2=shear.g2).shift(offset)
         return sheared_image
 
-    def _set_data(self):
+    def _set_data(self, **kw):
         """
         create galsim objects based on the input observation
         """
         import galsim
 
         obs = self.obs
+        offset = kw.get('offset', None)  # known offset of galaxy from center
 
         # these would share data with the original numpy arrays, make copies
         # to be sure they don't get modified
@@ -362,18 +368,24 @@ class MetacalDilatePSF(object):
                                       wcs=self.get_psf_wcs())
 
         # interpolated psf image
-        psf_int = galsim.InterpolatedImage(self.psf_image,
-                                           x_interpolant=self.interp)
+        psf_int = kw.get('psf_int', None)
+        if psf_int is None:
+            psf_int = galsim.InterpolatedImage(self.psf_image, gsparams=kw["gsparams"],
+                                               x_interpolant=self.interp)
 
         # this can be used to deconvolve the psf from the galaxy image
-        psf_int_inv = galsim.Deconvolve(psf_int)
+        psf_int_inv = galsim.Deconvolve(psf_int, gsparams=kw["gsparams"])
 
-        self.image_int = galsim.InterpolatedImage(self.image,
+        self.image_int = galsim.InterpolatedImage(self.image, gsparams=kw["gsparams"],
                                                   x_interpolant=self.interp)
 
         # deconvolved galaxy image, psf+pixel removed
         self.image_int_nopsf = galsim.Convolve(self.image_int,
                                                psf_int_inv)
+
+        true_gal = kw.get('true_gal', None)
+        if true_gal is not None:
+            self.image_int_nopsf = true_gal
 
         # interpolated psf deconvolved from pixel.  This is what
         # we dilate, shear, etc and reconvolve the image by
@@ -391,7 +403,7 @@ class MetacalDilatePSF(object):
         """
         return self.obs.psf.jacobian.get_galsim_wcs()
 
-    def _set_pixel(self):
+    def _set_pixel(self, **kw):
         """
         set the pixel based on the pixel scale, for convolutions
 
@@ -401,14 +413,14 @@ class MetacalDilatePSF(object):
         import galsim
 
         wcs = self.get_wcs()
-        self.pixel = wcs.toWorld(galsim.Pixel(scale=1))
-        self.pixel_inv = galsim.Deconvolve(self.pixel)
+        self.pixel = wcs.toWorld(galsim.Pixel(scale=1, gsparams=kw.get("gsparams",None)))
+        self.pixel_inv = galsim.Deconvolve(self.pixel, gsparams=kw.get("gsparams",None))
 
-    def _set_interp(self):
+    def _set_interp(self, **kw):
         """
         set the laczos interpolation configuration
         """
-        self.interp = 'lanczos15'
+        self.interp = kw.get('x_interp', 'lanczos15')
 
     def _make_psf_obs(self, psf_im):
 
@@ -478,7 +490,7 @@ class MetacalGaussPSF(MetacalDilatePSF):
         self.rng = rng
         self._setup_psf_noise()
 
-    def get_all(self, step=DEFAULT_STEP, types=None):
+    def get_all(self, step=DEFAULT_STEP, types=None, **kw):
         """
         Get metacal images in a dict for the requested image types
 
@@ -507,7 +519,7 @@ class MetacalGaussPSF(MetacalDilatePSF):
             for t in types:
                 assert t in METACAL_MINIMAL_TYPES, 'bad metacal type: %s' % t
 
-        return super().get_all(step=step, types=types)
+        return super().get_all(step=step, types=types, **kw)
 
     def _setup_psf_noise(self):
         pim = self.obs.psf.image
@@ -801,7 +813,7 @@ def _check_shape(shape):
         raise TypeError("shape must be of type ngmix.Shape")
 
 
-def _get_gauss_target_psf(psf, flux):
+def _get_gauss_target_psf(psf, flux, **kw):
     """
     taken from galsim/tests/test_metacal.py
 
@@ -828,4 +840,4 @@ def _get_gauss_target_psf(psf, flux):
     # exp(-0.5 * ksq_max * sigma_sq) = smaller_kval
     sigma_sq = -2. * np.log(smaller_kval) / ksq_max
 
-    return galsim.Gaussian(sigma=np.sqrt(sigma_sq), flux=flux)
+    return galsim.Gaussian(sigma=np.sqrt(sigma_sq), flux=flux, gsparams=kw.get('gsparams', None))
