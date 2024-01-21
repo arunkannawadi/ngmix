@@ -413,8 +413,8 @@ class MetacalDilatePSF(object):
         import galsim
 
         wcs = self.get_wcs()
-        self.pixel = wcs.toWorld(galsim.Pixel(scale=1, gsparams=kw.get("gsparams",None)))
-        self.pixel_inv = galsim.Deconvolve(self.pixel, gsparams=kw.get("gsparams",None))
+        self.pixel = wcs.toWorld(galsim.Pixel(scale=1, gsparams=kw.get("gsparams", None)))
+        self.pixel_inv = galsim.Deconvolve(self.pixel, gsparams=kw.get("gsparams", None))
 
     def _set_interp(self, **kw):
         """
